@@ -1,0 +1,103 @@
+name: CI 314551148
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-314551148-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typecheck, format, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Prettier check
+        run: npm run format:check
+
+      - name: Run tests with JUnit report
+        run: |
+          mkdir -p reports
+          npm test -- --reporter=default --reporter=junit --outputFile.junit=reports/vitest-junit.xml
+
+      - name: Publish test result summary
+        if: always()
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'reports/vitest-junit.xml';
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+
+          if (!summaryPath) {
+            process.exit(0);
+          }
+
+          if (!fs.existsSync(path)) {
+            fs.appendFileSync(
+              summaryPath,
+              [
+                '## Test Results',
+                '',
+                'JUnit report was not generated. Check the test step logs for the failure reason.',
+                ''
+              ].join('\n')
+            );
+            process.exit(0);
+          }
+
+          const xml = fs.readFileSync(path, 'utf8');
+          const attrs = Object.fromEntries(
+            [...(xml.match(/<testsuites\b[^>]*>/)?.[0] ?? '').matchAll(/(\w+)="([^"]*)"/g)].map(
+              ([, key, value]) => [key, value]
+            )
+          );
+
+          const rows = [
+            ['Total', attrs.tests ?? '0'],
+            ['Failures', attrs.failures ?? '0'],
+            ['Errors', attrs.errors ?? '0'],
+            ['Duration (seconds)', attrs.time ?? '0']
+          ];
+
+          const markdown = [
+            '## Test Results',
+            '',
+            '| Metric | Value |',
+            '| --- | ---: |',
+            ...rows.map(([label, value]) => `| ${label} | ${value} |`),
+            '',
+            'JUnit report path: `reports/vitest-junit.xml`',
+            ''
+          ].join('\n');
+
+          fs.appendFileSync(summaryPath, markdown);
+          NODE
+
+      - name: Upload test report artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vitest-junit-report
+          path: reports/vitest-junit.xml
+          if-no-files-found: warn
