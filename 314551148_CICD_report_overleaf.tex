@@ -1,0 +1,217 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage{ctex}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\geometry{margin=2.5cm}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue
+}
+
+\lstdefinestyle{yamlstyle}{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true,
+  backgroundcolor=\color{gray!8}
+}
+
+\title{CI/CD 作業報告}
+\author{學號：314551148 \\ 姓名：請填入姓名}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{CI Pipeline 說明}
+
+本作業以 \texttt{cicd-lab} 專案為基礎，新增
+\texttt{.github/workflows/ci\_314551148.yaml}，並設定在任何 branch push 時自動執行 CI pipeline。
+
+Pipeline 主要包含以下檢查：
+
+\begin{itemize}[noitemsep]
+  \item TypeScript typecheck
+  \item Prettier format check
+  \item Vitest test
+  \item 測試結果摘要與 JUnit XML artifact
+\end{itemize}
+
+\subsection{Workflow 主要內容}
+
+\begin{lstlisting}[style=yamlstyle,language={}]
+name: CI 314551148
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-314551148-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typecheck, format, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Prettier check
+        run: npm run format:check
+
+      - name: Run tests with JUnit report
+        run: |
+          mkdir -p reports
+          npm test -- --reporter=default --reporter=junit --outputFile.junit=reports/vitest-junit.xml
+
+      - name: Publish test result summary
+        if: always()
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'reports/vitest-junit.xml';
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+
+          if (!summaryPath) {
+            process.exit(0);
+          }
+
+          if (!fs.existsSync(path)) {
+            fs.appendFileSync(
+              summaryPath,
+              [
+                '## Test Results',
+                '',
+                'JUnit report was not generated. Check the test step logs for the failure reason.',
+                ''
+              ].join('\n')
+            );
+            process.exit(0);
+          }
+
+          const xml = fs.readFileSync(path, 'utf8');
+          const attrs = Object.fromEntries(
+            [...(xml.match(/<testsuites\b[^>]*>/)?.[0] ?? '').matchAll(/(\w+)="([^"]*)"/g)].map(
+              ([, key, value]) => [key, value]
+            )
+          );
+
+          const rows = [
+            ['Total', attrs.tests ?? '0'],
+            ['Failures', attrs.failures ?? '0'],
+            ['Errors', attrs.errors ?? '0'],
+            ['Duration (seconds)', attrs.time ?? '0']
+          ];
+
+          const markdown = [
+            '## Test Results',
+            '',
+            '| Metric | Value |',
+            '| --- | ---: |',
+            ...rows.map(([label, value]) => `| ${label} | ${value} |`),
+            '',
+            'JUnit report path: `reports/vitest-junit.xml`',
+            ''
+          ].join('\n');
+
+          fs.appendFileSync(summaryPath, markdown);
+          NODE
+
+      - name: Upload test report artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vitest-junit-report
+          path: reports/vitest-junit.xml
+          if-no-files-found: warn
+\end{lstlisting}
+
+\subsection{設計說明}
+
+\begin{itemize}
+  \item \texttt{npm ci}：依照 \texttt{package-lock.json} 安裝固定版本套件，確保本機與 GitHub Actions 的相依套件一致。
+  \item \texttt{npm run typecheck}：執行 TypeScript 型別檢查，不產生編譯輸出。
+  \item \texttt{npm run format:check}：使用 Prettier 檢查專案格式，確保程式碼風格一致。
+  \item \texttt{npm test}：使用 Vitest 執行測試，並額外輸出 \texttt{reports/vitest-junit.xml}。
+  \item \texttt{Publish test result summary}：讀取 JUnit XML，將測試總數、失敗數、錯誤數與執行時間寫入 GitHub Actions job summary。
+  \item \texttt{Upload test report artifact}：將 JUnit XML 上傳成 artifact，方便在 GitHub Actions 結果頁下載。
+\end{itemize}
+
+GitHub Actions 中任一步驟只要回傳非 0 exit code，整個 job 就會被標記為 failed。因此 TypeScript、Prettier 或測試任一檢查失敗時，CI pipeline 會正確顯示失敗。
+
+\section{CI 執行結果截圖}
+
+Push 到 GitHub 後，進入 repository 的 Actions 頁面，開啟 \texttt{CI 314551148} workflow，確認 pipeline 成功執行。
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox[c][7cm][c]{0.9\textwidth}{\centering 請在此放入 GitHub Actions 成功執行截圖}}
+  \caption{CI pipeline 成功執行結果}
+\end{figure}
+
+GitHub Actions 結果頁連結：\url{請填入連結}
+
+\section{失敗案例說明}
+
+為了驗證 CI 會在錯誤發生時失敗，我故意製造測試失敗案例。修改 \texttt{test/app.test.ts} 中 \texttt{/health} endpoint 的預期結果，例如將：
+
+\begin{lstlisting}[style=yamlstyle,language={}]
+expect(response.json()).toEqual({ status: 'ok' });
+\end{lstlisting}
+
+改成：
+
+\begin{lstlisting}[style=yamlstyle,language={}]
+expect(response.json()).toEqual({ status: 'fail' });
+\end{lstlisting}
+
+此時 API 實際回傳仍然是 \texttt{\{ status: 'ok' \}}，但測試預期值被改成 \texttt{\{ status: 'fail' \}}，因此 Vitest 會失敗，GitHub Actions 的 \texttt{Run tests with JUnit report} 步驟也會顯示 failed。
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox[c][7cm][c]{0.9\textwidth}{\centering 請在此放入 GitHub Actions 失敗執行截圖}}
+  \caption{CI pipeline 失敗案例}
+\end{figure}
+
+修正方式是將測試預期值改回：
+
+\begin{lstlisting}[style=yamlstyle,language={}]
+expect(response.json()).toEqual({ status: 'ok' });
+\end{lstlisting}
+
+修正後重新 push，GitHub Actions pipeline 會再次成功通過。
+
+\section{結論}
+
+本次作業完成了基本 CI pipeline 設計，包含 TypeScript 型別檢查、Prettier 格式檢查、Vitest 測試、測試結果摘要與 artifact 上傳。此設計能在 push 時自動檢查專案品質，並且在任一檢查失敗時明確讓 pipeline 失敗，符合 CI 的基本要求。
+
+\end{document}
